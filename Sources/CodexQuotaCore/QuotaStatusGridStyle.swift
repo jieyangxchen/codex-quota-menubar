@@ -24,8 +24,8 @@ public struct QuotaStatusGridStyle: Equatable, Sendable {
         valueFontSize: 11,
         lineGap: -3,
         verticalAdjustment: -1,
-        labelOriginY: 10.5,
-        valueOriginY: -1.5,
+        labelOriginY: 11.5,
+        valueOriginY: -0.5,
         horizontalAlignment: .center,
         horizontalPadding: 1
     )

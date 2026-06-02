@@ -117,11 +117,11 @@ if !expectEqual(gridStyle.valueFontSize, 11, "status grid value font size is one
     failures += 1
 }
 checks += 1
-if !expectEqual(gridStyle.labelOriginY, 10.5, "status grid keeps the label row at the previous y position") {
+if !expectEqual(gridStyle.labelOriginY, 11.5, "status grid nudges the label row upward to align with adjacent status items") {
     failures += 1
 }
 checks += 1
-if !expectEqual(gridStyle.valueOriginY, -1.5, "status grid keeps the value row at the previous y position") {
+if !expectEqual(gridStyle.valueOriginY, -0.5, "status grid nudges the value row upward to align with adjacent status items") {
     failures += 1
 }
 checks += 1

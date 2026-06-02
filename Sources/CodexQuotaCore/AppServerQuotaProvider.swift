@@ -55,7 +55,7 @@ public enum AppServerQuotaProvider {
 
         try process.run()
 
-        let initialize = #"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"codex-quota-menubar","title":"Codex Quota Menubar","version":"0.1.0"},"capabilities":{"experimentalApi":true,"requestAttestation":false,"optOutNotificationMethods":[]}}}"#
+        let initialize = #"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"codex-quota-menubar","title":"Codex Quota Menubar","version":"0.1.1"},"capabilities":{"experimentalApi":true,"requestAttestation":false,"optOutNotificationMethods":[]}}}"#
         let read = #"{"id":2,"method":"account/rateLimits/read"}"#
         input.fileHandleForWriting.write(Data((initialize + "\n").utf8))
         Thread.sleep(forTimeInterval: 1.0)
