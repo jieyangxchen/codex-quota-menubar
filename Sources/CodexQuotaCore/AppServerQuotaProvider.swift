@@ -1,5 +1,23 @@
 import Foundation
 
+public struct AppServerProbeConfiguration: Equatable, Sendable {
+    public let initializeWaitTimeoutSeconds: Double
+    public let rateLimitReadTimeoutSeconds: Double
+
+    public init(
+        initializeWaitTimeoutSeconds: Double,
+        rateLimitReadTimeoutSeconds: Double
+    ) {
+        self.initializeWaitTimeoutSeconds = initializeWaitTimeoutSeconds
+        self.rateLimitReadTimeoutSeconds = rateLimitReadTimeoutSeconds
+    }
+
+    public static let `default` = AppServerProbeConfiguration(
+        initializeWaitTimeoutSeconds: 0.75,
+        rateLimitReadTimeoutSeconds: 2.5
+    )
+}
+
 public enum AppServerQuotaProvider {
     public static func decodeResponse(from data: Data) throws -> AppServerRateLimitResponse {
         let decoder = JSONDecoder()
@@ -24,9 +42,13 @@ public enum AppServerQuotaProvider {
     }
 
     public static func fetchSnapshot(
-        codexExecutable: String = "/Applications/Codex.app/Contents/Resources/codex"
+        codexExecutable: String = "/Applications/Codex.app/Contents/Resources/codex",
+        configuration: AppServerProbeConfiguration = .default
     ) throws -> QuotaSnapshot {
-        let responseData = try runAppServerProbe(codexExecutable: codexExecutable)
+        let responseData = try runAppServerProbe(
+            codexExecutable: codexExecutable,
+            configuration: configuration
+        )
         let responseText = String(data: responseData, encoding: .utf8) ?? ""
 
         for line in responseText.split(separator: "\n") where line.contains("rateLimits") {
@@ -42,28 +64,49 @@ public enum AppServerQuotaProvider {
         throw QuotaProviderError.noSnapshot
     }
 
-    private static func runAppServerProbe(codexExecutable: String) throws -> Data {
+    private static func runAppServerProbe(
+        codexExecutable: String,
+        configuration: AppServerProbeConfiguration
+    ) throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: codexExecutable)
         process.arguments = ["app-server", "--listen", "stdio://"]
 
         let input = Pipe()
         let output = Pipe()
+        let reader = AppServerProbeOutputReader()
         process.standardInput = input
         process.standardOutput = output
         process.standardError = Pipe()
+        output.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if !data.isEmpty {
+                reader.append(data)
+            }
+        }
 
         try process.run()
 
-        let initialize = #"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"codex-quota-menubar","title":"Codex Quota Menubar","version":"0.1.1"},"capabilities":{"experimentalApi":true,"requestAttestation":false,"optOutNotificationMethods":[]}}}"#
+        let initialize = #"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"codex-quota-menubar","title":"Codex Quota Menubar","version":"0.1.2"},"capabilities":{"experimentalApi":true,"requestAttestation":false,"optOutNotificationMethods":[]}}}"#
         let read = #"{"id":2,"method":"account/rateLimits/read"}"#
         input.fileHandleForWriting.write(Data((initialize + "\n").utf8))
-        Thread.sleep(forTimeInterval: 1.0)
+        _ = reader.waitForInitialize(timeout: configuration.initializeWaitTimeoutSeconds)
         input.fileHandleForWriting.write(Data((read + "\n").utf8))
-        Thread.sleep(forTimeInterval: 3.0)
-        input.fileHandleForWriting.closeFile()
+        guard let data = reader.waitForRateLimits(timeout: configuration.rateLimitReadTimeoutSeconds) else {
+            output.fileHandleForReading.readabilityHandler = nil
+            input.fileHandleForWriting.closeFile()
+            if process.isRunning {
+                process.terminate()
+            }
+            process.waitUntilExit()
+            throw QuotaProviderError.noSnapshot
+        }
 
-        let data = output.fileHandleForReading.readDataToEndOfFile()
+        output.fileHandleForReading.readabilityHandler = nil
+        input.fileHandleForWriting.closeFile()
+        if process.isRunning {
+            process.terminate()
+        }
         process.waitUntilExit()
         return data
     }
@@ -102,4 +145,54 @@ public struct AppServerRateLimitWindow: Decodable, Sendable {
 
 private struct AppServerEnvelope: Decodable {
     let result: AppServerRateLimitResponse
+}
+
+private final class AppServerProbeOutputReader: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var buffer = Data()
+    private var sawInitialize = false
+    private var rateLimitsData: Data?
+
+    func append(_ data: Data) {
+        condition.lock()
+        buffer.append(data)
+
+        let text = String(data: buffer, encoding: .utf8) ?? ""
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let completeLines = lines.enumerated().compactMap { index, line -> Substring? in
+            index < lines.count - 1 || text.hasSuffix("\n") ? line : nil
+        }
+        sawInitialize = sawInitialize || completeLines.contains { line in
+            line.contains(#""id":1"#)
+        }
+        if rateLimitsData == nil, completeLines.contains(where: { $0.contains("rateLimits") }) {
+            rateLimitsData = buffer
+        }
+
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func waitForInitialize(timeout: TimeInterval) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return wait(until: { sawInitialize || rateLimitsData != nil }, timeout: timeout)
+    }
+
+    func waitForRateLimits(timeout: TimeInterval) -> Data? {
+        condition.lock()
+        defer { condition.unlock() }
+        _ = wait(until: { rateLimitsData != nil }, timeout: timeout)
+        return rateLimitsData
+    }
+
+    private func wait(until predicate: () -> Bool, timeout: TimeInterval) -> Bool {
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        while !predicate() {
+            if !condition.wait(until: deadline) {
+                break
+            }
+        }
+        return predicate()
+    }
 }

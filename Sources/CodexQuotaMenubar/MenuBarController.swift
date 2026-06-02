@@ -3,8 +3,9 @@ import CodexQuotaCore
 import Foundation
 
 @MainActor
-final class MenuBarController: NSObject {
+final class MenuBarController: NSObject, NSMenuDelegate {
     private static let gridStyle = QuotaStatusGridStyle.default
+    private static let refreshPolicy = QuotaRefreshPolicy.default
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let statusGridView = StatusGridView(
         frame: NSRect(
@@ -18,6 +19,7 @@ final class MenuBarController: NSObject {
     private var showUsed = false
     private var showTotalTokens = false
     private var timer: Timer?
+    private var isRefreshing = false
     private var latestSnapshot = QuotaSnapshot(
         source: .unavailable,
         capturedAt: Date(),
@@ -38,7 +40,7 @@ final class MenuBarController: NSObject {
         rebuildMenu()
         refreshNow()
         timer = Timer.scheduledTimer(
-            timeInterval: 60,
+            timeInterval: TimeInterval(Self.refreshPolicy.automaticIntervalSeconds),
             target: self,
             selector: #selector(timerFired),
             userInfo: nil,
@@ -52,6 +54,19 @@ final class MenuBarController: NSObject {
 
     @objc private func refreshMenuAction() {
         refreshNow()
+    }
+
+    nonisolated func menuWillOpen(_ menu: NSMenu) {
+        Task { @MainActor [weak self] in
+            self?.refreshIfMenuDataIsStale()
+        }
+    }
+
+    private func refreshIfMenuDataIsStale() {
+        let age = Date().timeIntervalSince(latestSnapshot.capturedAt)
+        if age >= TimeInterval(Self.refreshPolicy.menuOpenStaleIntervalSeconds) {
+            refreshNow()
+        }
     }
 
     @objc private func toggleUsed() {
@@ -75,10 +90,13 @@ final class MenuBarController: NSObject {
     }
 
     private func refreshNow() {
+        guard !isRefreshing else { return }
+        isRefreshing = true
         refreshQueue.async {
             let snapshot = Self.makeService().refresh()
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
+                self.isRefreshing = false
                 self.latestSnapshot = snapshot
                 self.updateTitle()
                 self.rebuildMenu()
@@ -112,6 +130,7 @@ final class MenuBarController: NSObject {
 
     private func rebuildMenu() {
         let menu = NSMenu()
+        menu.delegate = self
         menu.addItem(disabledItem("Source: \(sourceTitle(latestSnapshot.source))"))
 
         if let planType = latestSnapshot.planType {

@@ -79,7 +79,8 @@ Codex Quota Menubar 是一个轻量 macOS 菜单栏工具，用来显示当前 C
 
 ### 刷新策略
 
-- 默认每 60 秒自动刷新一次
+- 默认每 15 秒自动刷新一次
+- 打开菜单时，如果当前数据已超过 5 秒，也会触发一次后台刷新
 - 菜单中的 Refresh Now 可立即刷新
 - 刷新中不会显示 `...`，而是保留旧数字直到新数据返回
 - 若 live 不可用，会在菜单里显示当前 source 为 `Log`
@@ -218,7 +219,8 @@ The app uses a two-layer data flow:
 
 ### Refresh Behavior
 
-- Auto-refreshes every 60 seconds
+- Auto-refreshes every 15 seconds
+- Opening the menu triggers a background refresh when the current data is more than 5 seconds old
 - Refresh Now triggers an immediate refresh
 - Existing values stay visible while a refresh is running
 - The menu shows `Log` as the source when fallback data is used

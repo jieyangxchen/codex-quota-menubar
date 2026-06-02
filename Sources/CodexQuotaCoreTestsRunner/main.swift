@@ -134,6 +134,26 @@ if !expectEqual(gridStyle.lineGap, -3, "status grid leaves a more open gap betwe
 }
 checks += 1
 
+let refreshPolicy = QuotaRefreshPolicy.default
+if !expectEqual(refreshPolicy.automaticIntervalSeconds, 15, "quota refresh polls often enough for menu bar feedback") {
+    failures += 1
+}
+checks += 1
+if !expectEqual(refreshPolicy.menuOpenStaleIntervalSeconds, 5, "opening the menu refreshes shortly-stale quota data") {
+    failures += 1
+}
+checks += 1
+
+let probeConfiguration = AppServerProbeConfiguration.default
+if !expectEqual(probeConfiguration.initializeWaitTimeoutSeconds, 0.75, "app-server probe waits only briefly for initialize before reading quota") {
+    failures += 1
+}
+checks += 1
+if !expectEqual(probeConfiguration.rateLimitReadTimeoutSeconds, 2.5, "app-server probe returns soon after the live quota response is available") {
+    failures += 1
+}
+checks += 1
+
 do {
     let jsonl = """
     {"timestamp":"2026-06-01T07:31:45.190Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":260882}},"rate_limits":{"limit_id":"codex","primary":{"used_percent":1.0,"window_minutes":300,"resets_at":1780313729},"secondary":{"used_percent":2.0,"window_minutes":10080,"resets_at":1780849465},"plan_type":"prolite"}}}
