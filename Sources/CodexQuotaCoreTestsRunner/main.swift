@@ -153,6 +153,10 @@ if !expectEqual(probeConfiguration.rateLimitReadTimeoutSeconds, 2.5, "app-server
     failures += 1
 }
 checks += 1
+if !expectEqual(probeConfiguration.terminationWaitSeconds, 0.5, "app-server probe force-cleans child processes that do not exit promptly") {
+    failures += 1
+}
+checks += 1
 
 do {
     let jsonl = """

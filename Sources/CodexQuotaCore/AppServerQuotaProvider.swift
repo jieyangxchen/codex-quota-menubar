@@ -1,20 +1,25 @@
+import Darwin
 import Foundation
 
 public struct AppServerProbeConfiguration: Equatable, Sendable {
     public let initializeWaitTimeoutSeconds: Double
     public let rateLimitReadTimeoutSeconds: Double
+    public let terminationWaitSeconds: Double
 
     public init(
         initializeWaitTimeoutSeconds: Double,
-        rateLimitReadTimeoutSeconds: Double
+        rateLimitReadTimeoutSeconds: Double,
+        terminationWaitSeconds: Double
     ) {
         self.initializeWaitTimeoutSeconds = initializeWaitTimeoutSeconds
         self.rateLimitReadTimeoutSeconds = rateLimitReadTimeoutSeconds
+        self.terminationWaitSeconds = terminationWaitSeconds
     }
 
     public static let `default` = AppServerProbeConfiguration(
         initializeWaitTimeoutSeconds: 0.75,
-        rateLimitReadTimeoutSeconds: 2.5
+        rateLimitReadTimeoutSeconds: 2.5,
+        terminationWaitSeconds: 0.5
     )
 }
 
@@ -87,28 +92,41 @@ public enum AppServerQuotaProvider {
 
         try process.run()
 
-        let initialize = #"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"codex-quota-menubar","title":"Codex Quota Menubar","version":"0.1.2"},"capabilities":{"experimentalApi":true,"requestAttestation":false,"optOutNotificationMethods":[]}}}"#
+        let initialize = #"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"codex-quota-menubar","title":"Codex Quota Menubar","version":"0.1.3"},"capabilities":{"experimentalApi":true,"requestAttestation":false,"optOutNotificationMethods":[]}}}"#
         let read = #"{"id":2,"method":"account/rateLimits/read"}"#
         input.fileHandleForWriting.write(Data((initialize + "\n").utf8))
         _ = reader.waitForInitialize(timeout: configuration.initializeWaitTimeoutSeconds)
         input.fileHandleForWriting.write(Data((read + "\n").utf8))
         guard let data = reader.waitForRateLimits(timeout: configuration.rateLimitReadTimeoutSeconds) else {
-            output.fileHandleForReading.readabilityHandler = nil
-            input.fileHandleForWriting.closeFile()
-            if process.isRunning {
-                process.terminate()
-            }
-            process.waitUntilExit()
+            stopAppServerProbe(process, input: input, output: output, configuration: configuration)
             throw QuotaProviderError.noSnapshot
         }
 
+        stopAppServerProbe(process, input: input, output: output, configuration: configuration)
+        return data
+    }
+
+    private static func stopAppServerProbe(
+        _ process: Process,
+        input: Pipe,
+        output: Pipe,
+        configuration: AppServerProbeConfiguration
+    ) {
         output.fileHandleForReading.readabilityHandler = nil
         input.fileHandleForWriting.closeFile()
+
+        guard process.isRunning else { return }
+        process.terminate()
+
+        let deadline = Date(timeIntervalSinceNow: configuration.terminationWaitSeconds)
+        while process.isRunning && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+
         if process.isRunning {
-            process.terminate()
+            kill(process.processIdentifier, SIGKILL)
         }
         process.waitUntilExit()
-        return data
     }
 }
 
