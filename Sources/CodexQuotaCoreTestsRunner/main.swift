@@ -213,6 +213,61 @@ do {
 }
 
 do {
+    let jsonl = """
+    {"timestamp":"2026-06-26T01:20:02.711Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":6.0,"window_minutes":300,"resets_at":1782453903},"secondary":{"used_percent":52.0,"window_minutes":10080,"resets_at":1782786845},"plan_type":"prolite"}}}
+    {"timestamp":"2026-06-26T01:20:18.888Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex_bengalfox","primary":{"used_percent":0.0,"window_minutes":300,"resets_at":1782454771},"secondary":{"used_percent":0.0,"window_minutes":10080,"resets_at":1783041571},"plan_type":"prolite"}}}
+    """
+    let snapshot = try LogQuotaProvider.parseNewestSnapshot(from: jsonl)
+
+    if !expectEqual(snapshot.primary?.usedPercent, 6.0, "log parser ignores model-specific zero quota buckets") {
+        failures += 1
+    }
+    checks += 1
+    if !expectEqual(snapshot.secondary?.usedPercent, 52.0, "log parser keeps aggregate weekly quota bucket") {
+        failures += 1
+    }
+    checks += 1
+} catch {
+    fputs("FAIL: log parser filters model-specific quota buckets\n  error: \(error)\n", stderr)
+    failures += 1
+    checks += 1
+}
+
+do {
+    let tempDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("codex-quota-log-reader-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+    let staleFile = tempDirectory.appendingPathComponent("stale.jsonl")
+    let freshFile = tempDirectory.appendingPathComponent("fresh.jsonl")
+    try """
+    {"timestamp":"2026-06-26T01:00:00.000Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":80.0,"window_minutes":300},"secondary":{"used_percent":40.0,"window_minutes":10080},"plan_type":"prolite"}}}
+    """.write(to: staleFile, atomically: true, encoding: .utf8)
+    try """
+    {"timestamp":"2026-06-26T01:30:00.000Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":7.0,"window_minutes":300},"secondary":{"used_percent":53.0,"window_minutes":10080},"plan_type":"prolite"}}}
+    """.write(to: freshFile, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes(
+        [.modificationDate: Date(timeIntervalSince1970: 1_780_300_000)],
+        ofItemAtPath: staleFile.path
+    )
+    try FileManager.default.setAttributes(
+        [.modificationDate: Date(timeIntervalSince1970: 1_780_200_000)],
+        ofItemAtPath: freshFile.path
+    )
+
+    let snapshot = try LocalLogSnapshotReader.newestSnapshot(in: tempDirectory)
+    if !expectEqual(snapshot.primary?.usedPercent, 7.0, "local log reader chooses newest aggregate token_count by event timestamp") {
+        failures += 1
+    }
+    checks += 1
+} catch {
+    fputs("FAIL: local log reader chooses newest event timestamp across files\n  error: \(error)\n", stderr)
+    failures += 1
+    checks += 1
+}
+
+do {
     let json = """
     {"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":4,"windowDurationMins":300,"resetsAt":1780382157},"secondary":{"usedPercent":7,"windowDurationMins":10080,"resetsAt":1780849465},"planType":"prolite","credits":null,"rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":4,"windowDurationMins":300,"resetsAt":1780382157},"secondary":{"usedPercent":7,"windowDurationMins":10080,"resetsAt":1780849465},"planType":"prolite"},"codex_bengalfox":{"limitId":"codex_bengalfox","limitName":"GPT-5.3-Codex-Spark","primary":{"usedPercent":0,"windowDurationMins":300,"resetsAt":1780382267},"secondary":{"usedPercent":0,"windowDurationMins":10080,"resetsAt":1780969067},"planType":"prolite"}}}
     """.data(using: .utf8)!

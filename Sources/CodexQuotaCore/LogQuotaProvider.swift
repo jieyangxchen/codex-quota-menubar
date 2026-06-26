@@ -14,7 +14,8 @@ public enum LogQuotaProvider {
                   let event = try? decoder.decode(LogEvent.self, from: data),
                   event.type == "event_msg",
                   event.payload.type == "token_count",
-                  let rateLimits = event.payload.rateLimits
+                  let rateLimits = event.payload.rateLimits,
+                  rateLimits.isAggregateCodexBucket
             else { continue }
 
             newest = QuotaSnapshot(
@@ -44,14 +45,18 @@ public enum LocalLogSnapshotReader {
             modificationDate(for: $0) > modificationDate(for: $1)
         }
 
+        var newestSnapshot: QuotaSnapshot?
         for file in sortedFiles.prefix(20) {
             if let contents = try? String(contentsOf: file, encoding: .utf8),
                let snapshot = try? LogQuotaProvider.parseNewestSnapshot(from: contents) {
-                return snapshot
+                if newestSnapshot == nil || snapshot.capturedAt > newestSnapshot!.capturedAt {
+                    newestSnapshot = snapshot
+                }
             }
         }
 
-        throw QuotaProviderError.noSnapshot
+        guard let newestSnapshot else { throw QuotaProviderError.noSnapshot }
+        return newestSnapshot
     }
 
     private static func modificationDate(for url: URL) -> Date {
@@ -94,14 +99,20 @@ private struct TotalTokenUsage: Decodable {
 }
 
 private struct LogRateLimits: Decodable {
+    let limitId: String?
     let primary: LogWindow?
     let secondary: LogWindow?
     let planType: String?
 
     enum CodingKeys: String, CodingKey {
+        case limitId = "limit_id"
         case primary
         case secondary
         case planType = "plan_type"
+    }
+
+    var isAggregateCodexBucket: Bool {
+        limitId == nil || limitId == "codex"
     }
 }
 
