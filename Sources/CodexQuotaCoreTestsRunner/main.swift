@@ -135,11 +135,25 @@ if !expectEqual(gridStyle.lineGap, -3, "status grid leaves a more open gap betwe
 checks += 1
 
 let refreshPolicy = QuotaRefreshPolicy.default
-if !expectEqual(refreshPolicy.automaticIntervalSeconds, 15, "quota refresh polls often enough for menu bar feedback") {
+if !expectEqual(refreshPolicy.automaticIntervalSeconds, 8, "quota refresh polls quickly now that live reads reuse one app-server connection") {
     failures += 1
 }
 checks += 1
-if !expectEqual(refreshPolicy.menuOpenStaleIntervalSeconds, 5, "opening the menu refreshes shortly-stale quota data") {
+if !expectEqual(refreshPolicy.menuOpenStaleIntervalSeconds, 3, "opening the menu refreshes shortly-stale quota data") {
+    failures += 1
+}
+checks += 1
+
+let logReadConfiguration = LocalLogReadConfiguration.default
+if !expectEqual(logReadConfiguration.maxFilesToScan, 20, "log reader scans the most recently modified candidate files") {
+    failures += 1
+}
+checks += 1
+if !expectEqual(logReadConfiguration.tailBytes, 128 * 1024, "log reader reads only the tail of each candidate file by default") {
+    failures += 1
+}
+checks += 1
+if !expectEqual(logReadConfiguration.fullReadFallbackFiles, 3, "log reader only full-reads a small fallback set when tails miss quota data") {
     failures += 1
 }
 checks += 1
@@ -157,6 +171,107 @@ if !expectEqual(probeConfiguration.terminationWaitSeconds, 0.5, "app-server prob
     failures += 1
 }
 checks += 1
+
+let responseBuffer = AppServerResponseBuffer()
+let partialLine = #"{"id":7,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":3,"windowDurationMins":300},"secondary":{"usedPercent":5,"windowDurationMins":10080},"planType":"prolite"}}}"#
+let midpoint = partialLine.index(partialLine.startIndex, offsetBy: partialLine.count / 2)
+responseBuffer.append(Data(partialLine[..<midpoint].utf8))
+if !expectEqual(responseBuffer.waitForResponse(id: 7, timeout: 0.01), nil, "app-server response buffer waits for complete JSON lines") {
+    failures += 1
+}
+checks += 1
+responseBuffer.append(Data((String(partialLine[midpoint...]) + "\n").utf8))
+let bufferedResponse = responseBuffer.waitForResponse(id: 7, timeout: 0.01)
+if !expectEqual(bufferedResponse.flatMap { String(data: $0, encoding: .utf8) }, partialLine, "app-server response buffer returns complete response by id") {
+    failures += 1
+}
+checks += 1
+
+let diagnosticsRows = QuotaDiagnosticsFormatter.rows(
+    for: makeSnapshot(),
+    liveDiagnostics: AppServerQuotaProviderDiagnostics(
+        isProcessRunning: true,
+        successfulReadCount: 2,
+        restartCount: 1,
+        lastSuccessAt: Date(timeIntervalSince1970: 1_780_299_600),
+        lastFailureAt: nil,
+        lastFailureDescription: nil
+    ),
+    cacheFileURL: URL(fileURLWithPath: "/tmp/codex-quota-cache.json")
+)
+if !expectEqual(diagnosticsRows.contains("Source: Live"), true, "diagnostics rows include the current source") {
+    failures += 1
+}
+checks += 1
+if !expectEqual(diagnosticsRows.contains("Live process: running"), true, "diagnostics rows include live process state") {
+    failures += 1
+}
+checks += 1
+if !expectEqual(diagnosticsRows.contains("Live reads: 2"), true, "diagnostics rows include live read count") {
+    failures += 1
+}
+checks += 1
+if !expectEqual(diagnosticsRows.contains("Cache: /tmp/codex-quota-cache.json"), true, "diagnostics rows include the cache path") {
+    failures += 1
+}
+checks += 1
+
+do {
+    let tempDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("codex-quota-cache-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+    let cache = QuotaSnapshotCache(fileURL: tempDirectory.appendingPathComponent("last-live.json"))
+    try cache.store(makeSnapshot(totalTokens: 456_789))
+    let loaded = try cache.load()
+
+    if !expectEqual(loaded.source, .cache, "snapshot cache restores live data as cached source") {
+        failures += 1
+    }
+    checks += 1
+    if !expectEqual(loaded.primary?.usedPercent, 2, "snapshot cache preserves primary used percent") {
+        failures += 1
+    }
+    checks += 1
+    if !expectEqual(loaded.totalTokens, 456_789, "snapshot cache preserves total token count") {
+        failures += 1
+    }
+    checks += 1
+} catch {
+    fputs("FAIL: snapshot cache round trips live quota\n  error: \(error)\n", stderr)
+    failures += 1
+    checks += 1
+}
+
+do {
+    let tempDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("codex-quota-cache-ignore-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+    let cacheURL = tempDirectory.appendingPathComponent("last-live.json")
+    let cache = QuotaSnapshotCache(fileURL: cacheURL)
+    let logOnlySnapshot = QuotaSnapshot(
+        source: .log,
+        capturedAt: Date(timeIntervalSince1970: 1_780_299_700),
+        planType: "prolite",
+        primary: QuotaWindow(usedPercent: 11, windowDurationMinutes: 300, resetsAt: nil),
+        secondary: nil,
+        totalTokens: nil,
+        statusMessage: nil
+    )
+
+    try cache.store(logOnlySnapshot)
+    if !expectEqual(FileManager.default.fileExists(atPath: cacheURL.path), false, "snapshot cache ignores non-live fallback data") {
+        failures += 1
+    }
+    checks += 1
+} catch {
+    fputs("FAIL: snapshot cache ignores non-live quota\n  error: \(error)\n", stderr)
+    failures += 1
+    checks += 1
+}
 
 do {
     let jsonl = """
@@ -268,6 +383,95 @@ do {
 }
 
 do {
+    let tempDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("codex-quota-log-tail-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+    let file = tempDirectory.appendingPathComponent("tail.jsonl")
+    let largePrefix = String(repeating: #"{"type":"noise"}"# + "\n", count: 500)
+    try """
+    \(largePrefix)
+    {"timestamp":"2026-06-26T02:00:00.000Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":12.0,"window_minutes":300},"secondary":{"used_percent":22.0,"window_minutes":10080},"plan_type":"prolite"}}}
+    """.write(to: file, atomically: true, encoding: .utf8)
+
+    let snapshot = try LocalLogSnapshotReader.newestSnapshot(
+        in: tempDirectory,
+        configuration: LocalLogReadConfiguration(maxFilesToScan: 5, tailBytes: 512, fullReadFallbackFiles: 0)
+    )
+    if !expectEqual(snapshot.primary?.usedPercent, 12.0, "local log reader can parse quota from a file tail") {
+        failures += 1
+    }
+    checks += 1
+} catch {
+    fputs("FAIL: local log reader parses file tails\n  error: \(error)\n", stderr)
+    failures += 1
+    checks += 1
+}
+
+do {
+    let tempDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("codex-quota-log-full-fallback-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+    let file = tempDirectory.appendingPathComponent("fallback.jsonl")
+    try """
+    {"timestamp":"2026-06-26T02:15:00.000Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":13.0,"window_minutes":300},"secondary":{"used_percent":23.0,"window_minutes":10080},"plan_type":"prolite"}}}
+    \(String(repeating: #"{"type":"noise"}"# + "\n", count: 500))
+    """.write(to: file, atomically: true, encoding: .utf8)
+
+    let snapshot = try LocalLogSnapshotReader.newestSnapshot(
+        in: tempDirectory,
+        configuration: LocalLogReadConfiguration(maxFilesToScan: 5, tailBytes: 128, fullReadFallbackFiles: 1)
+    )
+    if !expectEqual(snapshot.primary?.usedPercent, 13.0, "local log reader full-reads a small fallback set when tails miss") {
+        failures += 1
+    }
+    checks += 1
+} catch {
+    fputs("FAIL: local log reader full-read fallback\n  error: \(error)\n", stderr)
+    failures += 1
+    checks += 1
+}
+
+do {
+    let tempDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("codex-quota-log-cache-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+    let file = tempDirectory.appendingPathComponent("cached.jsonl")
+    try """
+    {"timestamp":"2026-06-26T02:30:00.000Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":14.0,"window_minutes":300},"secondary":{"used_percent":24.0,"window_minutes":10080},"plan_type":"prolite"}}}
+    """.write(to: file, atomically: true, encoding: .utf8)
+
+    let reader = CachedLocalLogSnapshotReader(
+        sessionsDirectory: tempDirectory,
+        configuration: LocalLogReadConfiguration(maxFilesToScan: 5, tailBytes: 1024, fullReadFallbackFiles: 0),
+        minimumRefreshIntervalSeconds: 60
+    )
+    let first = try reader.newestSnapshot()
+    try """
+    {"timestamp":"2026-06-26T02:31:00.000Z","type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":15.0,"window_minutes":300},"secondary":{"used_percent":25.0,"window_minutes":10080},"plan_type":"prolite"}}}
+    """.write(to: file, atomically: true, encoding: .utf8)
+    let second = try reader.newestSnapshot()
+
+    if !expectEqual(first.primary?.usedPercent, 14.0, "cached local log reader reads the initial snapshot") {
+        failures += 1
+    }
+    checks += 1
+    if !expectEqual(second.primary?.usedPercent, 14.0, "cached local log reader reuses a fresh cached snapshot") {
+        failures += 1
+    }
+    checks += 1
+} catch {
+    fputs("FAIL: cached local log reader reuses fresh snapshots\n  error: \(error)\n", stderr)
+    failures += 1
+    checks += 1
+}
+
+do {
     let json = """
     {"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":4,"windowDurationMins":300,"resetsAt":1780382157},"secondary":{"usedPercent":7,"windowDurationMins":10080,"resetsAt":1780849465},"planType":"prolite","credits":null,"rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":4,"windowDurationMins":300,"resetsAt":1780382157},"secondary":{"usedPercent":7,"windowDurationMins":10080,"resetsAt":1780849465},"planType":"prolite"},"codex_bengalfox":{"limitId":"codex_bengalfox","limitName":"GPT-5.3-Codex-Spark","primary":{"usedPercent":0,"windowDurationMins":300,"resetsAt":1780382267},"secondary":{"usedPercent":0,"windowDurationMins":10080,"resetsAt":1780969067},"planType":"prolite"}}}
     """.data(using: .utf8)!
@@ -331,6 +535,30 @@ if !expectEqual(fallbackResult.source, .log, "quota service falls back to log sn
 }
 checks += 1
 if !expectEqual(fallbackResult.totalTokens, 123, "quota service keeps log token count") {
+    failures += 1
+}
+checks += 1
+
+let cachedSnapshot = QuotaSnapshot(
+    source: .cache,
+    capturedAt: Date(timeIntervalSince1970: 1_780_299_580),
+    planType: "prolite",
+    primary: QuotaWindow(usedPercent: 5, windowDurationMinutes: 300, resetsAt: nil),
+    secondary: QuotaWindow(usedPercent: 8, windowDurationMinutes: 10_080, resetsAt: nil),
+    totalTokens: 456,
+    statusMessage: "Cached live quota"
+)
+let cacheFallbackService = QuotaService(
+    liveProvider: { throw QuotaProviderError.noSnapshot },
+    logProvider: { throw QuotaProviderError.noSnapshot },
+    cacheProvider: { cachedSnapshot }
+)
+let cacheFallbackResult = cacheFallbackService.refresh()
+if !expectEqual(cacheFallbackResult.source, .cache, "quota service falls back to last-good live cache") {
+    failures += 1
+}
+checks += 1
+if !expectEqual(cacheFallbackResult.primary?.usedPercent, 5, "quota service keeps cached quota values") {
     failures += 1
 }
 checks += 1

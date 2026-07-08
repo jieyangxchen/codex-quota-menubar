@@ -4,6 +4,24 @@ public enum QuotaProviderError: Error, Equatable {
     case noSnapshot
 }
 
+public struct LocalLogReadConfiguration: Equatable, Sendable {
+    public let maxFilesToScan: Int
+    public let tailBytes: Int
+    public let fullReadFallbackFiles: Int
+
+    public init(maxFilesToScan: Int, tailBytes: Int, fullReadFallbackFiles: Int) {
+        self.maxFilesToScan = maxFilesToScan
+        self.tailBytes = tailBytes
+        self.fullReadFallbackFiles = fullReadFallbackFiles
+    }
+
+    public static let `default` = LocalLogReadConfiguration(
+        maxFilesToScan: 20,
+        tailBytes: 128 * 1024,
+        fullReadFallbackFiles: 3
+    )
+}
+
 public enum LogQuotaProvider {
     public static func parseNewestSnapshot(from jsonl: String) throws -> QuotaSnapshot {
         let decoder = JSONDecoder()
@@ -34,8 +52,57 @@ public enum LogQuotaProvider {
     }
 }
 
+public final class CachedLocalLogSnapshotReader: @unchecked Sendable {
+    private let sessionsDirectory: URL
+    private let configuration: LocalLogReadConfiguration
+    private let minimumRefreshIntervalSeconds: TimeInterval
+    private let lock = NSLock()
+    private var cachedSnapshot: QuotaSnapshot?
+    private var lastRefreshAt: Date?
+
+    public init(
+        sessionsDirectory: URL,
+        configuration: LocalLogReadConfiguration = .default,
+        minimumRefreshIntervalSeconds: TimeInterval = 5
+    ) {
+        self.sessionsDirectory = sessionsDirectory
+        self.configuration = configuration
+        self.minimumRefreshIntervalSeconds = minimumRefreshIntervalSeconds
+    }
+
+    public func newestSnapshot() throws -> QuotaSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let now = Date()
+        if let cachedSnapshot,
+           let lastRefreshAt,
+           now.timeIntervalSince(lastRefreshAt) < minimumRefreshIntervalSeconds {
+            return cachedSnapshot
+        }
+
+        do {
+            let snapshot = try LocalLogSnapshotReader.newestSnapshot(
+                in: sessionsDirectory,
+                configuration: configuration
+            )
+            cachedSnapshot = snapshot
+            lastRefreshAt = now
+            return snapshot
+        } catch {
+            if let cachedSnapshot {
+                return cachedSnapshot
+            }
+            throw error
+        }
+    }
+}
+
 public enum LocalLogSnapshotReader {
-    public static func newestSnapshot(in sessionsDirectory: URL) throws -> QuotaSnapshot {
+    public static func newestSnapshot(
+        in sessionsDirectory: URL,
+        configuration: LocalLogReadConfiguration = .default
+    ) throws -> QuotaSnapshot {
         let files = FileManager.default
             .enumerator(at: sessionsDirectory, includingPropertiesForKeys: [.contentModificationDateKey])?
             .compactMap { $0 as? URL }
@@ -46,17 +113,41 @@ public enum LocalLogSnapshotReader {
         }
 
         var newestSnapshot: QuotaSnapshot?
-        for file in sortedFiles.prefix(20) {
-            if let contents = try? String(contentsOf: file, encoding: .utf8),
+        for (index, file) in sortedFiles.prefix(configuration.maxFilesToScan).enumerated() {
+            if let contents = try? trailingText(from: file, maxBytes: configuration.tailBytes),
                let snapshot = try? LogQuotaProvider.parseNewestSnapshot(from: contents) {
-                if newestSnapshot == nil || snapshot.capturedAt > newestSnapshot!.capturedAt {
-                    newestSnapshot = snapshot
-                }
+                newestSnapshot = newer(snapshot, than: newestSnapshot)
+                continue
+            }
+
+            if index < configuration.fullReadFallbackFiles,
+               let contents = try? String(contentsOf: file, encoding: .utf8),
+               let snapshot = try? LogQuotaProvider.parseNewestSnapshot(from: contents) {
+                newestSnapshot = newer(snapshot, than: newestSnapshot)
             }
         }
 
         guard let newestSnapshot else { throw QuotaProviderError.noSnapshot }
         return newestSnapshot
+    }
+
+    private static func newer(_ candidate: QuotaSnapshot, than current: QuotaSnapshot?) -> QuotaSnapshot {
+        guard let current else { return candidate }
+        return candidate.capturedAt > current.capturedAt ? candidate : current
+    }
+
+    private static func trailingText(from url: URL, maxBytes: Int) throws -> String {
+        guard maxBytes > 0 else { return "" }
+
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        let fileSize = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+        let readSize = min(UInt64(maxBytes), fileSize)
+        let offset = fileSize - readSize
+
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { handle.closeFile() }
+        handle.seek(toFileOffset: offset)
+        return String(data: handle.readDataToEndOfFile(), encoding: .utf8) ?? ""
     }
 
     private static func modificationDate(for url: URL) -> Date {

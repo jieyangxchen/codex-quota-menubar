@@ -3,10 +3,11 @@ import Foundation
 public enum QuotaSource: String, Sendable {
     case live
     case log
+    case cache
     case unavailable
 }
 
-public struct QuotaWindow: Equatable, Sendable {
+public struct QuotaWindow: Equatable, Codable, Sendable {
     public let usedPercent: Double
     public let windowDurationMinutes: Int?
     public let resetsAt: Date?

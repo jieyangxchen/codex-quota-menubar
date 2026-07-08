@@ -16,6 +16,13 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         )
     )
     private let refreshQueue = DispatchQueue(label: "codex-quota-menubar.refresh", qos: .utility)
+    private let liveQuotaProvider = PersistentAppServerQuotaProvider()
+    private let snapshotCache = QuotaSnapshotCache()
+    private let logSnapshotReader = CachedLocalLogSnapshotReader(
+        sessionsDirectory: FileManager.default
+            .homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/sessions")
+    )
     private var showUsed = false
     private var showTotalTokens = false
     private var timer: Timer?
@@ -37,6 +44,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             QuotaDisplayColumn(label: "5h", value: "--"),
             QuotaDisplayColumn(label: "1w", value: "--")
         ]
+        if let cachedSnapshot = try? snapshotCache.load() {
+            latestSnapshot = cachedSnapshot
+            updateTitle()
+        }
         rebuildMenu()
         refreshNow()
         timer = Timer.scheduledTimer(
@@ -86,14 +97,16 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func quit() {
+        liveQuotaProvider.close()
         NSApplication.shared.terminate(nil)
     }
 
     private func refreshNow() {
         guard !isRefreshing else { return }
         isRefreshing = true
+        let service = makeService()
         refreshQueue.async {
-            let snapshot = Self.makeService().refresh()
+            let snapshot = service.refresh()
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.isRefreshing = false
@@ -107,16 +120,22 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         }
     }
 
-    nonisolated private static func makeService() -> QuotaService {
-        QuotaService(
+    private func makeService() -> QuotaService {
+        let liveQuotaProvider = liveQuotaProvider
+        let snapshotCache = snapshotCache
+        let logSnapshotReader = logSnapshotReader
+        return QuotaService(
             liveProvider: {
-                try AppServerQuotaProvider.fetchSnapshot()
+                try liveQuotaProvider.fetchSnapshot()
             },
             logProvider: {
-                let sessions = FileManager.default
-                    .homeDirectoryForCurrentUser
-                    .appendingPathComponent(".codex/sessions")
-                return try LocalLogSnapshotReader.newestSnapshot(in: sessions)
+                try logSnapshotReader.newestSnapshot()
+            },
+            cacheProvider: {
+                try snapshotCache.load()
+            },
+            liveSnapshotHandler: { snapshot in
+                try? snapshotCache.store(snapshot)
             }
         )
     }
@@ -151,6 +170,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             menu.addItem(disabledItem(statusMessage))
         }
 
+        menu.addItem(diagnosticsItem())
         menu.addItem(.separator())
         menu.addItem(toggleItem(title: "Show used", action: #selector(toggleUsed), isOn: showUsed))
         menu.addItem(toggleItem(title: "Show total tokens", action: #selector(toggleTotalTokens), isOn: showTotalTokens))
@@ -169,16 +189,26 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     private func sourceTitle(_ source: QuotaSource) -> String {
-        switch source {
-        case .live: return "Live"
-        case .log: return "Log"
-        case .unavailable: return "Unavailable"
-        }
+        QuotaDiagnosticsFormatter.sourceTitle(source)
     }
 
     private func disabledItem(_ title: String) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         item.isEnabled = false
+        return item
+    }
+
+    private func diagnosticsItem() -> NSMenuItem {
+        let item = NSMenuItem(title: "Diagnostics", action: nil, keyEquivalent: "")
+        let submenu = NSMenu()
+        for row in QuotaDiagnosticsFormatter.rows(
+            for: latestSnapshot,
+            liveDiagnostics: liveQuotaProvider.diagnostics,
+            cacheFileURL: snapshotCache.fileURL
+        ) {
+            submenu.addItem(disabledItem(row))
+        }
+        item.submenu = submenu
         return item
     }
 

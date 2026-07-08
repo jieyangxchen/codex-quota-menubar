@@ -13,7 +13,7 @@ public struct QuotaRefreshPolicy: Equatable, Sendable {
     }
 
     public static let `default` = QuotaRefreshPolicy(
-        automaticIntervalSeconds: 15,
-        menuOpenStaleIntervalSeconds: 5
+        automaticIntervalSeconds: 8,
+        menuOpenStaleIntervalSeconds: 3
     )
 }

@@ -25,11 +25,13 @@ Codex Quota Menubar 是一个轻量 macOS 菜单栏工具，用来显示当前 C
 | 功能 | 说明 |
 | --- | --- |
 | 菜单栏双行显示 | 上排显示 `5h` / `1w`，下排显示各自剩余额度百分比 |
-| 实时优先 | 优先通过本机 Codex app-server 读取账户级 `account/rateLimits/read` |
-| 日志降级 | 实时读取失败时，读取 `~/.codex/sessions/**/*.jsonl` 中最近的 `token_count` |
+| 实时优先 | 复用本机 Codex app-server 连接读取账户级 `account/rateLimits/read` |
+| 日志降级 | 实时读取失败时，尾读 `~/.codex/sessions/**/*.jsonl` 中最近的 `token_count` |
+| 本地缓存 | 启动时可先显示上一次成功 live 快照，避免短暂不可用时跳回空值 |
 | 数字稳定 | 刷新时保留旧数字直到新数字返回，百分比使用固定槽位避免跳动 |
 | 展示切换 | 可切换显示已用百分比或剩余百分比 |
 | Token 总量 | 可选择在菜单中显示当前线程 total tokens |
+| 诊断信息 | 菜单内提供 source、更新时间、live 进程状态、读取次数和缓存路径 |
 | 一键操作 | 菜单内提供 Refresh、Open Codex、Quit |
 
 ### 菜单栏效果
@@ -52,11 +54,11 @@ Codex Quota Menubar 是一个轻量 macOS 菜单栏工具，用来显示当前 C
 
 ### 数据来源
 
-应用的数据链路按优先级分为两层：
+应用的数据链路按优先级分为三层：
 
 1. **Live**
 
-   通过本机 Codex app-server 调用：
+   通过本机 Codex app-server 调用，并在后台复用同一个 stdio 连接：
 
    ```text
    account/rateLimits/read
@@ -75,15 +77,20 @@ Codex Quota Menubar 是一个轻量 macOS 菜单栏工具，用来显示当前 C
    ~/.codex/sessions/**/*.jsonl
    ```
 
-   它只解析其中的 `token_count` 事件，不上传、不修改日志文件。
+   它只解析其中的 `token_count` 事件，不上传、不修改日志文件。默认仅读取候选文件尾部，必要时对少量最近文件做全量回退。
+
+3. **Last-good live cache**
+
+   当 live 和 log 都暂时不可用时，应用可使用本机 Application Support 里的最后一次成功 live 快照兜底。缓存只保存 quota 数值，不保存账号 token。
 
 ### 刷新策略
 
-- 默认每 15 秒自动刷新一次
-- 打开菜单时，如果当前数据已超过 5 秒，也会触发一次后台刷新
+- 默认每 8 秒自动刷新一次
+- 打开菜单时，如果当前数据已超过 3 秒，也会触发一次后台刷新
 - 菜单中的 Refresh Now 可立即刷新
 - 刷新中不会显示 `...`，而是保留旧数字直到新数据返回
-- 若 live 不可用，会在菜单里显示当前 source 为 `Log`
+- 若 live 不可用，会在菜单里显示当前 source 为 `Log` 或 `Cached Live`
+- Diagnostics 子菜单可查看 live 进程、成功读取次数、最近错误和缓存路径
 
 ### 本地开发
 
@@ -111,6 +118,18 @@ scripts/build-app.sh
 dist/CodexQuotaMenubar.app
 ```
 
+构建并安装到稳定的本地路径，同时设置开机自启动：
+
+```bash
+scripts/install-local.sh
+```
+
+默认安装位置：
+
+```text
+~/Applications/CodexQuotaMenubar.app
+```
+
 ### 本地打包
 
 生成 `.dmg`、`.zip` 和 checksum：
@@ -130,8 +149,8 @@ release/
 推送 `v*` tag 会触发 GitHub Actions Release workflow：
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 Workflow 会在 macOS runner 上完成：
@@ -165,11 +184,13 @@ Codex Quota Menubar is a small macOS menu bar utility for monitoring your remain
 | Feature | Details |
 | --- | --- |
 | Two-line menu bar display | Shows `5h` / `1w` labels on top and remaining percentages below |
-| Live-first data | Reads account-level quota through local Codex `account/rateLimits/read` |
-| Local log fallback | Falls back to the newest `token_count` event in local Codex logs |
+| Live-first data | Reuses a local Codex app-server connection for `account/rateLimits/read` |
+| Local log fallback | Falls back to the newest `token_count` event by tail-reading local Codex logs |
+| Last-good cache | Restores the last successful live snapshot on startup or temporary failures |
 | Stable digits | Keeps old values during refresh and uses fixed-width percentage slots |
 | Display modes | Toggle used percentage versus remaining percentage |
 | Token total | Optionally show total token usage in the menu |
+| Diagnostics | Shows source, update time, live process state, read counts, and cache path |
 | Quick actions | Refresh, Open Codex, and Quit from the menu |
 
 ### Menu Bar Shape
@@ -192,11 +213,11 @@ Move `CodexQuotaMenubar.app` into `/Applications` and launch it. The app is curr
 
 ### Data Sources
 
-The app uses a two-layer data flow:
+The app uses a three-layer data flow:
 
 1. **Live**
 
-   It calls the local Codex app-server method:
+   It calls the local Codex app-server method and reuses one background stdio connection:
 
    ```text
    account/rateLimits/read
@@ -215,15 +236,20 @@ The app uses a two-layer data flow:
    ~/.codex/sessions/**/*.jsonl
    ```
 
-   It only parses `token_count` events. It does not upload or modify local logs.
+   It only parses `token_count` events. It does not upload or modify local logs. By default it reads candidate file tails and only full-reads a small fallback set when tails miss quota data.
+
+3. **Last-good live cache**
+
+   If both live and log data are temporarily unavailable, the app can show the last successful live snapshot from local Application Support storage. The cache stores quota values only, not account tokens.
 
 ### Refresh Behavior
 
-- Auto-refreshes every 15 seconds
-- Opening the menu triggers a background refresh when the current data is more than 5 seconds old
+- Auto-refreshes every 8 seconds
+- Opening the menu triggers a background refresh when the current data is more than 3 seconds old
 - Refresh Now triggers an immediate refresh
 - Existing values stay visible while a refresh is running
-- The menu shows `Log` as the source when fallback data is used
+- The menu shows `Log` or `Cached Live` as the source when fallback data is used
+- The Diagnostics submenu shows live process state, successful read count, recent errors, and cache path
 
 ### Local Development
 
@@ -251,6 +277,18 @@ Output:
 dist/CodexQuotaMenubar.app
 ```
 
+Build, install to a stable local path, and configure launch-at-login:
+
+```bash
+scripts/install-local.sh
+```
+
+Default install location:
+
+```text
+~/Applications/CodexQuotaMenubar.app
+```
+
 ### Local Packaging
 
 Create a `.dmg`, `.zip`, and checksum file:
@@ -270,8 +308,8 @@ release/
 GitHub Actions builds release assets when a `v*` tag is pushed:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 The workflow runs on macOS and:
