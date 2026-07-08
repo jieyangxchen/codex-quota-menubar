@@ -97,6 +97,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.isRefreshing = false
+                guard QuotaSnapshotUpdatePolicy.shouldApply(snapshot, over: self.latestSnapshot) else {
+                    return
+                }
                 self.latestSnapshot = snapshot
                 self.updateTitle()
                 self.rebuildMenu()

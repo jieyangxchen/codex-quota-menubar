@@ -335,6 +335,47 @@ if !expectEqual(fallbackResult.totalTokens, 123, "quota service keeps log token 
 }
 checks += 1
 
+let newerLiveSnapshot = QuotaSnapshot(
+    source: .live,
+    capturedAt: Date(timeIntervalSince1970: 2_000),
+    planType: "prolite",
+    primary: QuotaWindow(usedPercent: 58, windowDurationMinutes: 300, resetsAt: nil),
+    secondary: QuotaWindow(usedPercent: 76, windowDurationMinutes: 10_080, resetsAt: nil),
+    totalTokens: nil,
+    statusMessage: nil
+)
+let olderLogSnapshot = QuotaSnapshot(
+    source: .log,
+    capturedAt: Date(timeIntervalSince1970: 1_900),
+    planType: "prolite",
+    primary: QuotaWindow(usedPercent: 36, windowDurationMinutes: 300, resetsAt: nil),
+    secondary: QuotaWindow(usedPercent: 72, windowDurationMinutes: 10_080, resetsAt: nil),
+    totalTokens: nil,
+    statusMessage: nil
+)
+if !expectEqual(QuotaSnapshotUpdatePolicy.shouldApply(olderLogSnapshot, over: newerLiveSnapshot), false, "older log fallback does not replace newer live quota") {
+    failures += 1
+}
+checks += 1
+
+let newerLogSnapshot = QuotaSnapshot(
+    source: .log,
+    capturedAt: Date(timeIntervalSince1970: 2_100),
+    planType: "prolite",
+    primary: QuotaWindow(usedPercent: 60, windowDurationMinutes: 300, resetsAt: nil),
+    secondary: QuotaWindow(usedPercent: 77, windowDurationMinutes: 10_080, resetsAt: nil),
+    totalTokens: nil,
+    statusMessage: nil
+)
+if !expectEqual(QuotaSnapshotUpdatePolicy.shouldApply(newerLogSnapshot, over: newerLiveSnapshot), true, "newer log fallback may replace older live quota") {
+    failures += 1
+}
+checks += 1
+if !expectEqual(QuotaSnapshotUpdatePolicy.shouldApply(newerLiveSnapshot, over: olderLogSnapshot), true, "live quota replaces log fallback") {
+    failures += 1
+}
+checks += 1
+
 do {
     let json = """
     {"rateLimits":{"limitId":"codex","primary":{"usedPercent":2,"windowDurationMins":300,"resetsAt":1780313729},"secondary":{"usedPercent":2,"windowDurationMins":10080,"resetsAt":1780849465},"planType":"prolite","credits":null,"limitName":null,"rateLimitReachedType":null},"rateLimitsByLimitId":null}
