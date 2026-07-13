@@ -16,10 +16,12 @@ public enum QuotaFormatter {
         showUsed: Bool,
         showTotalTokens: Bool
     ) -> String {
-        var parts = [
-            formatWindow(snapshot.primary, fallbackLabel: "5h", showUsed: showUsed),
-            formatWindow(snapshot.secondary, fallbackLabel: "1w", showUsed: showUsed)
-        ]
+        var parts = statusColumns(
+            for: snapshot,
+            showUsed: showUsed,
+            showTotalTokens: false
+        )
+        .map { "\($0.label) \($0.value)" }
 
         if showTotalTokens, let totalTokens = snapshot.totalTokens {
             parts.append(formatTokens(totalTokens))
@@ -46,16 +48,18 @@ public enum QuotaFormatter {
         showUsed: Bool,
         showTotalTokens: Bool
     ) -> [QuotaDisplayColumn] {
-        var columns = [
-            QuotaDisplayColumn(
-                label: label(for: snapshot.primary, fallback: "5h"),
-                value: formatValue(snapshot.primary, showUsed: showUsed)
-            ),
-            QuotaDisplayColumn(
-                label: label(for: snapshot.secondary, fallback: "1w"),
-                value: formatValue(snapshot.secondary, showUsed: showUsed)
-            )
-        ]
+        var columns = [snapshot.primary, snapshot.secondary]
+            .compactMap { $0 }
+            .map { window in
+                QuotaDisplayColumn(
+                    label: label(for: window, fallback: "1w"),
+                    value: formatValue(window, showUsed: showUsed)
+                )
+            }
+
+        if columns.isEmpty {
+            columns.append(QuotaDisplayColumn(label: "1w", value: "--"))
+        }
 
         if showTotalTokens, let totalTokens = snapshot.totalTokens {
             columns.append(QuotaDisplayColumn(label: "TOK", value: formatTokens(totalTokens)))
@@ -83,13 +87,7 @@ public enum QuotaFormatter {
         return "\(minutes)m"
     }
 
-    private static func label(for window: QuotaWindow?, fallback: String) -> String {
-        guard let window else { return fallback }
-        return label(for: window, fallback: fallback)
-    }
-
-    private static func formatValue(_ window: QuotaWindow?, showUsed: Bool) -> String {
-        guard let window else { return "--" }
+    private static func formatValue(_ window: QuotaWindow, showUsed: Bool) -> String {
         let value = showUsed ? window.usedPercent : window.remainingPercent
         return "\(Int(value.rounded()))%"
     }

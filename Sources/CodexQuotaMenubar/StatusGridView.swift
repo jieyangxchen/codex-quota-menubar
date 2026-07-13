@@ -13,7 +13,7 @@ final class StatusGridView: NSView {
 
     override var intrinsicContentSize: NSSize {
         NSSize(
-            width: CGFloat(max(columns.count, 2) * style.columnWidth),
+            width: CGFloat(max(columns.count, 1) * style.columnWidth),
             height: CGFloat(style.itemHeight)
         )
     }
@@ -22,7 +22,7 @@ final class StatusGridView: NSView {
         super.draw(dirtyRect)
 
         let activeColumns = columns.isEmpty
-            ? [QuotaDisplayColumn(label: "Codex", value: "--")]
+            ? [QuotaDisplayColumn(label: "1w", value: "--")]
             : columns
         let columnWidth = bounds.width / CGFloat(activeColumns.count)
         let labelFont = NSFont.systemFont(ofSize: CGFloat(style.labelFontSize), weight: .regular)

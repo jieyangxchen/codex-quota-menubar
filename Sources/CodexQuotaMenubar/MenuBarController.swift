@@ -11,7 +11,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         frame: NSRect(
             x: 0,
             y: 0,
-            width: CGFloat(2 * MenuBarController.gridStyle.columnWidth),
+            width: CGFloat(MenuBarController.gridStyle.columnWidth),
             height: CGFloat(MenuBarController.gridStyle.itemHeight)
         )
     )
@@ -38,12 +38,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     )
 
     func start() {
-        statusItem.length = CGFloat(2 * Self.gridStyle.columnWidth)
+        statusItem.length = CGFloat(Self.gridStyle.columnWidth)
         configureStatusButton()
-        statusGridView.columns = [
-            QuotaDisplayColumn(label: "5h", value: "--"),
-            QuotaDisplayColumn(label: "1w", value: "--")
-        ]
+        statusGridView.columns = [QuotaDisplayColumn(label: "1w", value: "--")]
         if let cachedSnapshot = try? snapshotCache.load() {
             latestSnapshot = cachedSnapshot
             updateTitle()
@@ -93,7 +90,10 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     }
 
     @objc private func openCodex() {
-        NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/Codex.app"))
+        let chatGPTURL = URL(fileURLWithPath: "/Applications/ChatGPT.app")
+        let legacyCodexURL = URL(fileURLWithPath: "/Applications/Codex.app")
+        let targetURL = FileManager.default.fileExists(atPath: chatGPTURL.path) ? chatGPTURL : legacyCodexURL
+        NSWorkspace.shared.open(targetURL)
     }
 
     @objc private func quit() {
@@ -147,7 +147,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             showTotalTokens: showTotalTokens
         )
         statusGridView.columns = columns
-        statusItem.length = CGFloat(max(columns.count, 2) * Self.gridStyle.columnWidth)
+        statusItem.length = CGFloat(max(columns.count, 1) * Self.gridStyle.columnWidth)
     }
 
     private func rebuildMenu() {
@@ -159,8 +159,14 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             menu.addItem(disabledItem("Plan: \(planType)"))
         }
 
-        menu.addItem(disabledItem(windowTitle("5h", latestSnapshot.primary)))
-        menu.addItem(disabledItem(windowTitle("1w", latestSnapshot.secondary)))
+        let windows = [latestSnapshot.primary, latestSnapshot.secondary].compactMap { $0 }
+        if windows.isEmpty {
+            menu.addItem(disabledItem(windowTitle("1w", nil)))
+        } else {
+            for window in windows {
+                menu.addItem(disabledItem(windowTitle(QuotaFormatter.label(for: window, fallback: "1w"), window)))
+            }
+        }
 
         if let totalTokens = latestSnapshot.totalTokens {
             menu.addItem(disabledItem("Total tokens: \(QuotaFormatter.formatTokens(totalTokens))"))
@@ -175,7 +181,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(toggleItem(title: "Show used", action: #selector(toggleUsed), isOn: showUsed))
         menu.addItem(toggleItem(title: "Show total tokens", action: #selector(toggleTotalTokens), isOn: showTotalTokens))
         menu.addItem(actionItem(title: "Refresh Now", action: #selector(refreshMenuAction), key: "r"))
-        menu.addItem(actionItem(title: "Open Codex", action: #selector(openCodex), key: "o"))
+        menu.addItem(actionItem(title: "Open ChatGPT", action: #selector(openCodex), key: "o"))
         menu.addItem(.separator())
         menu.addItem(actionItem(title: "Quit", action: #selector(quit), key: "q"))
 

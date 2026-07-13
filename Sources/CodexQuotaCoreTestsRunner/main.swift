@@ -31,6 +31,22 @@ func makeSnapshot(totalTokens: Int? = nil) -> QuotaSnapshot {
     )
 }
 
+func makeWeeklyOnlySnapshot(totalTokens: Int? = nil) -> QuotaSnapshot {
+    QuotaSnapshot(
+        source: .live,
+        capturedAt: Date(timeIntervalSince1970: 1_780_299_600),
+        planType: "prolite",
+        primary: QuotaWindow(
+            usedPercent: 17,
+            windowDurationMinutes: 10_080,
+            resetsAt: Date(timeIntervalSince1970: 1_780_849_465)
+        ),
+        secondary: nil,
+        totalTokens: totalTokens,
+        statusMessage: nil
+    )
+}
+
 var failures = 0
 var checks = 0
 
@@ -86,6 +102,50 @@ if !expectEqual(
         QuotaDisplayColumn(label: "1w", value: "98%")
     ],
     "status columns keep each window label paired with its own centered percentage"
+) {
+    failures += 1
+}
+checks += 1
+
+if !expectEqual(
+    QuotaFormatter.menuTitle(for: makeWeeklyOnlySnapshot(), showUsed: false, showTotalTokens: false),
+    "1w 83%",
+    "weekly-only quota title does not show the removed 5h window"
+) {
+    failures += 1
+}
+checks += 1
+
+if !expectEqual(
+    QuotaFormatter.statusColumns(
+        for: makeWeeklyOnlySnapshot(),
+        showUsed: false,
+        showTotalTokens: false
+    ),
+    [QuotaDisplayColumn(label: "1w", value: "83%")],
+    "weekly-only quota renders one status column"
+) {
+    failures += 1
+}
+checks += 1
+
+let emptyQuotaSnapshot = QuotaSnapshot(
+    source: .unavailable,
+    capturedAt: Date(timeIntervalSince1970: 1_780_299_600),
+    planType: nil,
+    primary: nil,
+    secondary: nil,
+    totalTokens: nil,
+    statusMessage: "Loading"
+)
+if !expectEqual(
+    QuotaFormatter.statusColumns(
+        for: emptyQuotaSnapshot,
+        showUsed: false,
+        showTotalTokens: false
+    ),
+    [QuotaDisplayColumn(label: "1w", value: "--")],
+    "empty quota placeholder uses the current weekly-only shape"
 ) {
     failures += 1
 }
@@ -171,6 +231,38 @@ if !expectEqual(probeConfiguration.terminationWaitSeconds, 0.5, "app-server prob
     failures += 1
 }
 checks += 1
+
+do {
+    let tempDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("codex-executable-resolver-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tempDirectory) }
+
+    let oldCodex = tempDirectory.appendingPathComponent("Codex.app/Contents/Resources/codex")
+    let chatGPTCodex = tempDirectory.appendingPathComponent("ChatGPT.app/Contents/Resources/codex")
+    try FileManager.default.createDirectory(
+        at: oldCodex.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try FileManager.default.createDirectory(
+        at: chatGPTCodex.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try Data().write(to: oldCodex)
+    try Data().write(to: chatGPTCodex)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: oldCodex.path)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: chatGPTCodex.path)
+
+    let resolved = CodexExecutableResolver.resolve(candidates: [chatGPTCodex.path, oldCodex.path])
+    if !expectEqual(resolved, chatGPTCodex.path, "codex executable resolver prefers ChatGPT bundled codex") {
+        failures += 1
+    }
+    checks += 1
+} catch {
+    fputs("FAIL: codex executable resolver prefers ChatGPT path\n  error: \(error)\n", stderr)
+    failures += 1
+    checks += 1
+}
 
 let responseBuffer = AppServerResponseBuffer()
 let partialLine = #"{"id":7,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":3,"windowDurationMins":300},"secondary":{"usedPercent":5,"windowDurationMins":10080},"planType":"prolite"}}}"#
@@ -491,6 +583,38 @@ do {
     checks += 1
 } catch {
     fputs("FAIL: live mixed bucket normalization\n  error: \(error)\n", stderr)
+    failures += 1
+    checks += 1
+}
+
+do {
+    let json = """
+    {"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":17,"windowDurationMins":10080,"resetsAt":1784511945},"secondary":null,"planType":"prolite"},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":17,"windowDurationMins":10080,"resetsAt":1784511945},"secondary":null,"planType":"prolite"}}}
+    """.data(using: .utf8)!
+    let response = try AppServerQuotaProvider.decodeResponse(from: json)
+    let snapshot = AppServerQuotaProvider.normalize(
+        response,
+        capturedAt: Date(timeIntervalSince1970: 1_780_299_600)
+    )
+
+    if !expectEqual(snapshot.primary?.windowDurationMinutes, 10_080, "live normalization accepts current weekly-only quota") {
+        failures += 1
+    }
+    checks += 1
+    if !expectEqual(snapshot.secondary, nil, "live normalization preserves absent secondary quota") {
+        failures += 1
+    }
+    checks += 1
+    if !expectEqual(
+        QuotaFormatter.statusColumns(for: snapshot, showUsed: false, showTotalTokens: false),
+        [QuotaDisplayColumn(label: "1w", value: "83%")],
+        "current weekly-only live payload renders one quota column"
+    ) {
+        failures += 1
+    }
+    checks += 1
+} catch {
+    fputs("FAIL: live weekly-only normalization\n  error: \(error)\n", stderr)
     failures += 1
     checks += 1
 }

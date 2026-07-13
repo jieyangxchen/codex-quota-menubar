@@ -5,7 +5,7 @@
 <h1 align="center">Codex Quota Menubar</h1>
 
 <p align="center">
-  A tiny macOS menu bar app for watching your Codex 5-hour and 1-week quota at a glance.
+  A tiny macOS menu bar app for watching your current Codex / ChatGPT quota at a glance.
 </p>
 
 <p align="center">
@@ -18,13 +18,14 @@
 
 ## 中文
 
-Codex Quota Menubar 是一个轻量 macOS 菜单栏工具，用来显示当前 Codex 额度剩余情况。它会优先读取本机 Codex 的实时账户级用量；如果实时数据暂时不可用，再降级读取本机 Codex 会话日志中的最近一次用量状态。
+Codex Quota Menubar 是一个轻量 macOS 菜单栏工具，用来显示当前 Codex / ChatGPT 统一额度剩余情况。它会优先读取 ChatGPT 内置 Codex app-server 的实时账户级用量；如果实时数据暂时不可用，再降级读取本机 Codex 会话日志中的最近一次用量状态。
 
 ### 主要特性
 
 | 功能 | 说明 |
 | --- | --- |
-| 菜单栏双行显示 | 上排显示 `5h` / `1w`，下排显示各自剩余额度百分比 |
+| 菜单栏双行显示 | 上排显示实际 quota 窗口，下排显示各自剩余额度百分比 |
+| 适配新版 ChatGPT | 优先使用 `/Applications/ChatGPT.app/Contents/Resources/codex`，兼容旧 Codex.app 路径 |
 | 实时优先 | 复用本机 Codex app-server 连接读取账户级 `account/rateLimits/read` |
 | 日志降级 | 实时读取失败时，尾读 `~/.codex/sessions/**/*.jsonl` 中最近的 `token_count` |
 | 本地缓存 | 启动时可先显示上一次成功 live 快照，避免短暂不可用时跳回空值 |
@@ -32,16 +33,16 @@ Codex Quota Menubar 是一个轻量 macOS 菜单栏工具，用来显示当前 C
 | 展示切换 | 可切换显示已用百分比或剩余百分比 |
 | Token 总量 | 可选择在菜单中显示当前线程 total tokens |
 | 诊断信息 | 菜单内提供 source、更新时间、live 进程状态、读取次数和缓存路径 |
-| 一键操作 | 菜单内提供 Refresh、Open Codex、Quit |
+| 一键操作 | 菜单内提供 Refresh、Open ChatGPT、Quit |
 
 ### 菜单栏效果
 
 ```text
-5h    1w
-58%   87%
+1w
+83%
 ```
 
-实际显示为紧凑的两列布局，每列内部保持独立中心线；`89% -> 80%` 这类变化不会让整列左右抖动。
+实际显示为紧凑的动态列布局：当前新版返回单个 1 周窗口时只显示 `1w`；如果旧日志或旧服务仍返回多个窗口，也会按实际窗口分别显示。百分比使用固定槽位，`89% -> 80%` 这类变化不会让整列左右抖动。
 
 ### 安装
 
@@ -58,16 +59,13 @@ Codex Quota Menubar 是一个轻量 macOS 菜单栏工具，用来显示当前 C
 
 1. **Live**
 
-   通过本机 Codex app-server 调用，并在后台复用同一个 stdio 连接：
+   通过本机 ChatGPT 内置 Codex app-server 调用，并在后台复用同一个 stdio 连接：
 
    ```text
    account/rateLimits/read
    ```
 
-   应用读取账户级 `codex` aggregate 桶里的 `primary` 和 `secondary`：
-
-   - `primary`：短周期窗口，通常是 5 小时
-   - `secondary`：长周期窗口，通常是 1 周
+   应用读取账户级 `codex` aggregate 桶里的实际窗口。新版 ChatGPT / Codex 目前返回单个 1 周窗口，旧版响应中的 5 小时窗口会继续被兼容显示。
 
 2. **Log fallback**
 
@@ -149,8 +147,8 @@ release/
 推送 `v*` tag 会触发 GitHub Actions Release workflow：
 
 ```bash
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.3.0
+git push origin v0.3.0
 ```
 
 Workflow 会在 macOS runner 上完成：
@@ -177,13 +175,14 @@ Release 安装包由 GitHub Actions 从源码重新构建。
 
 ## English
 
-Codex Quota Menubar is a small macOS menu bar utility for monitoring your remaining Codex quota. It prefers live account-level quota from the local Codex app-server and falls back to the newest local Codex session log when live data is unavailable.
+Codex Quota Menubar is a small macOS menu bar utility for monitoring your remaining Codex / ChatGPT quota. It prefers live account-level quota from the Codex app-server bundled with ChatGPT and falls back to the newest local Codex session log when live data is unavailable.
 
 ### Highlights
 
 | Feature | Details |
 | --- | --- |
-| Two-line menu bar display | Shows `5h` / `1w` labels on top and remaining percentages below |
+| Two-line menu bar display | Shows actual quota windows on top and remaining percentages below |
+| Updated ChatGPT support | Prefers `/Applications/ChatGPT.app/Contents/Resources/codex` and keeps legacy Codex.app fallback |
 | Live-first data | Reuses a local Codex app-server connection for `account/rateLimits/read` |
 | Local log fallback | Falls back to the newest `token_count` event by tail-reading local Codex logs |
 | Last-good cache | Restores the last successful live snapshot on startup or temporary failures |
@@ -191,16 +190,16 @@ Codex Quota Menubar is a small macOS menu bar utility for monitoring your remain
 | Display modes | Toggle used percentage versus remaining percentage |
 | Token total | Optionally show total token usage in the menu |
 | Diagnostics | Shows source, update time, live process state, read counts, and cache path |
-| Quick actions | Refresh, Open Codex, and Quit from the menu |
+| Quick actions | Refresh, Open ChatGPT, and Quit from the menu |
 
 ### Menu Bar Shape
 
 ```text
-5h    1w
-58%   87%
+1w
+83%
 ```
 
-The menu bar item uses two compact columns with independent centers. Percentage values are drawn in stable slots so updates like `89% -> 80%` do not cause the whole column to shift.
+The menu bar item uses a compact dynamic-column layout. With the current ChatGPT response it shows only the 1-week window; if legacy logs or services still return multiple windows, each window is displayed separately. Percentage values are drawn in stable slots so updates like `89% -> 80%` do not cause the whole column to shift.
 
 ### Installation
 
@@ -217,16 +216,13 @@ The app uses a three-layer data flow:
 
 1. **Live**
 
-   It calls the local Codex app-server method and reuses one background stdio connection:
+   It calls the Codex app-server bundled with ChatGPT and reuses one background stdio connection:
 
    ```text
    account/rateLimits/read
    ```
 
-   The app reads the account-level `codex` aggregate bucket:
-
-   - `primary`: short window, usually 5 hours
-   - `secondary`: long window, usually 1 week
+   The app reads the actual windows in the account-level `codex` aggregate bucket. Current ChatGPT / Codex responses return a single 1-week window; legacy 5-hour windows are still displayed when present.
 
 2. **Log fallback**
 
@@ -308,8 +304,8 @@ release/
 GitHub Actions builds release assets when a `v*` tag is pushed:
 
 ```bash
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.3.0
+git push origin v0.3.0
 ```
 
 The workflow runs on macOS and:

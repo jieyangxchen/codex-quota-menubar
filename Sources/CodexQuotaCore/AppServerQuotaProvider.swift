@@ -123,7 +123,7 @@ public final class PersistentAppServerQuotaProvider: @unchecked Sendable {
     private var lastFailureDescription: String?
 
     public init(
-        codexExecutable: String = "/Applications/Codex.app/Contents/Resources/codex",
+        codexExecutable: String = CodexExecutableResolver.resolve(),
         configuration: AppServerProbeConfiguration = .default
     ) {
         self.codexExecutable = codexExecutable
@@ -218,7 +218,7 @@ public final class PersistentAppServerQuotaProvider: @unchecked Sendable {
         }
 
         let initializeID = nextIDLocked()
-        let initialize = #"{"id":\#(initializeID),"method":"initialize","params":{"clientInfo":{"name":"codex-quota-menubar","title":"Codex Quota Menubar","version":"0.2.0"},"capabilities":{"experimentalApi":true,"requestAttestation":false,"optOutNotificationMethods":[]}}}"#
+        let initialize = #"{"id":\#(initializeID),"method":"initialize","params":{"clientInfo":{"name":"codex-quota-menubar","title":"Codex Quota Menubar","version":"0.3.0"},"capabilities":{"experimentalApi":true,"requestAttestation":false,"optOutNotificationMethods":[]}}}"#
         newInput.fileHandleForWriting.write(Data((initialize + "\n").utf8))
 
         guard newResponses.waitForResponse(
@@ -322,7 +322,7 @@ public enum AppServerQuotaProvider {
     }
 
     public static func fetchSnapshot(
-        codexExecutable: String = "/Applications/Codex.app/Contents/Resources/codex",
+        codexExecutable: String = CodexExecutableResolver.resolve(),
         configuration: AppServerProbeConfiguration = .default
     ) throws -> QuotaSnapshot {
         let responseData = try runAppServerProbe(
@@ -368,7 +368,7 @@ public enum AppServerQuotaProvider {
 
         try process.run()
 
-        let initialize = #"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"codex-quota-menubar","title":"Codex Quota Menubar","version":"0.2.0"},"capabilities":{"experimentalApi":true,"requestAttestation":false,"optOutNotificationMethods":[]}}}"#
+        let initialize = #"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"codex-quota-menubar","title":"Codex Quota Menubar","version":"0.3.0"},"capabilities":{"experimentalApi":true,"requestAttestation":false,"optOutNotificationMethods":[]}}}"#
         let read = #"{"id":2,"method":"account/rateLimits/read"}"#
         input.fileHandleForWriting.write(Data((initialize + "\n").utf8))
         _ = reader.waitForInitialize(timeout: configuration.initializeWaitTimeoutSeconds)
